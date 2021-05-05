@@ -24,9 +24,10 @@ namespace Kinematics
           LEARNING RATE - dictates how fast we move against the gradient. Larger values approach the solution faster, but are also more likely to overshoot it.
         */
         //Joints are assigned manually
-        //public Transform container_joints;
-
         public KinematicsJoint[] joints;
+        //An end effector is basically the "hand" of the arm
+        public Transform end_effector;
+        //Where the "hand" is trying to get to
         public Transform target_transform;
         //The sampling distance defines the rotation on the joints we will be testing to find the less resistant movement
         public float sampling_distance = 5;
@@ -34,6 +35,10 @@ namespace Kinematics
         //This is the minimum distance the arm should be from the target
         //It exists to avoid the wiggly movement when the arm keeps overshooting the target
         public float distance_threshold = 0.1f;
+
+        //The following variables are related to details in how the tentacle moves
+        //These variables are used by the ErrorFunction, previously called DistanceFromTarget
+
 
         //Public for debug only
         public float[] angles;
@@ -44,7 +49,7 @@ namespace Kinematics
         private void Update()
         {
             if (!target_transform)
-            { 
+            {
                 Debug.LogError("No target transform found!");
                 return;
             }
@@ -101,7 +106,7 @@ namespace Kinematics
             //Invoking this function repeatedly move the robotic arm closer to the target point.
 
             //Avoid arm wiggle by checking if its within the minimum range from the target
-            if (DistanceFromTarget(target, joint_angles) < distance_threshold)
+            if (ErrorFunction(target, joint_angles) < distance_threshold)
                 return joint_angles;
 
             var c = joint_angles.Length;
@@ -114,7 +119,7 @@ namespace Kinematics
                 joint_angles[i] = Mathf.Clamp(joint_angles[i], joints[i].angle_min, joints[i].angle_max);
 
                 //Early avoid arm wiggle by checking if its within the minimum range from the target
-                if (DistanceFromTarget(target, joint_angles) < distance_threshold)
+                if (ErrorFunction(target, joint_angles) < distance_threshold)
                     return joint_angles;
             }
             return joint_angles;
@@ -122,18 +127,19 @@ namespace Kinematics
 
         private float PartialGradient(Vector3 target, float[] joint_angles, int joint_index)
         {
-            //When invoked, this function returns a single number that indicates how the distance from our target changes as a function of the joint rotation
+            //Previously, when invoked, this function returns a single number that indicates how the distance from our target changes as a function of the joint rotation
             //The least resistant movement is the movement towards the bottom of the curve, the place closest to our target
+            //But currently, the ErrorFunction has more complexity other than only distance from the target
 
             //Store old angle
             float initial_angle = joint_angles[joint_index];
 
             //Find current distance
-            float current_dist = DistanceFromTarget(target, joint_angles);
+            float current_dist = ErrorFunction(target, joint_angles);
 
             //Find distance using the sampling distance
             joint_angles[joint_index] += sampling_distance;
-            float sampled_dist = DistanceFromTarget(target, joint_angles);
+            float sampled_dist = ErrorFunction(target, joint_angles);
 
             float gradient = (sampled_dist - current_dist) / sampling_distance;
 
@@ -143,8 +149,28 @@ namespace Kinematics
             //Return this gradient
             return gradient;
         }
+        private float ErrorFunction(Vector3 target_pos, float[] joint_angles)
+        {
+            //This function alters the arm movement by applying penalties towards unwanted behaviour
+            //ALL VALUES MUST BE NORMALIZED
+            //Inverse Kinematics always wants to minimize the distance from target
+            Vector3 current_pos = ForwardKinematics(joint_angles);
+            float distance_penalty = Vector3.Distance(current_pos, target_pos);
+            //The tip of the tentacle tries to match the rotation of the object we want to reach //It will try to match to the UP vector
+            float rotation_penalty = Mathf.Abs(Quaternion.Angle(end_effector.rotation, target_transform.rotation));
+            rotation_penalty /= 180f; //Normalization
+            //Keeping limbs in unnatural positions is uncomfortable
+            float torsion_penalty = 0;
+            for (int i = 1; i < joint_angles.Length; i++)
+                torsion_penalty += Mathf.Abs(Quaternion.Angle(joints[i-1].transform.localRotation, joints[i].transform.localRotation) );
+            torsion_penalty /= joint_angles.Length-1;
+            torsion_penalty /= 180f; //Normalization
 
+            Debug.Log("Dist " + distance_penalty + "Rot " + rotation_penalty + "Torsion " + torsion_penalty);
+            return distance_penalty*1+rotation_penalty * 10+ torsion_penalty*1f;
+        }
 
+        [System.Obsolete("DistanceFromTarget is deprecated. Use ErrorFunction() method for more complex movements.")] 
         private float DistanceFromTarget(Vector3 target_pos, float[] joint_angles)
         {
             //Inverse Kinematics always wants to minimize the value returne by this function
